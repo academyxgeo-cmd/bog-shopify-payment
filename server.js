@@ -5,6 +5,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const BOG_AUTH_URL =
   "https://oauth2.bog.ge/auth/realms/bog/protocol/openid-connect/token";
