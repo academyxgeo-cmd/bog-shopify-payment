@@ -391,7 +391,76 @@ app.get("/pay/:orderId", async (req, res) => {
     `);
   }
 });
+app.get("/pay-order/:orderName", async (req, res) => {
+  try {
+    const rawOrderName = decodeURIComponent(req.params.orderName);
+    const orderName = rawOrderName.startsWith("#")
+      ? rawOrderName
+      : `#${rawOrderName}`;
 
+    const query = `
+      query FindOrder($query: String!) {
+        orders(first: 1, query: $query) {
+          nodes {
+            id
+            name
+            displayFinancialStatus
+            totalOutstandingSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+            currentTotalPriceSet {
+              shopMoney {
+                amount
+                currencyCode
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const data = await shopifyGraphQL(query, {
+      query: `name:${orderName}`,
+    });
+
+    const order = data.orders.nodes[0];
+
+    if (!order) {
+      throw new Error(`Shopify order not found by name: ${orderName}`);
+    }
+
+    if (order.displayFinancialStatus === "PAID") {
+      return res.redirect(
+        `/payment-success?order=${encodeURIComponent(order.name)}`
+      );
+    }
+
+    const numericId = order.id.split("/").pop();
+
+    const bogOrder = await createBogOrderForShopifyOrder(numericId, order);
+    const redirectUrl = bogOrder._links?.redirect?.href;
+
+    if (!redirectUrl) {
+      return res.status(500).json({
+        ok: false,
+        error: "BOG did not return redirect URL",
+        bogOrder,
+      });
+    }
+
+    return res.redirect(302, redirectUrl);
+  } catch (error) {
+    console.error("Pay by order name error:", error);
+
+    return res.status(500).send(`
+      <h1>გადახდის ბმული ვერ შეიქმნა</h1>
+      <p>${error.message}</p>
+    `);
+  }
+});
 app.post("/api/bog/callback", async (req, res) => {
   try {
     console.log("BOG CALLBACK:", JSON.stringify(req.body, null, 2));
