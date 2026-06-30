@@ -534,7 +534,13 @@ app.get("/checkout", async (req, res) => {
       return res.status(400).send("Missing variant_id");
     }
 
-    const productInfo = await getCheckoutProductInfo(variantId);
+    const productInfo = {
+      productTitle: req.query.product_title || "არჩეული პროდუქტი",
+      variantTitle: req.query.variant_title || "",
+      price: Number(req.query.price || 0),
+      imageUrl: req.query.image_url || "",
+    };
+
     const total = productInfo.price * quantity;
 
     res.send(`
@@ -932,7 +938,7 @@ app.get("/checkout", async (req, res) => {
                   </div>
 
                   <button class="pay-button" type="submit">
-                    გადახდა საქართველოს ბანკით — ${formatGel(total)}
+                    გადახდა საქართველოს ბანკით${total > 0 ? ` — ${formatGel(total)}` : ""}
                   </button>
 
                   <div class="fine-print">
@@ -954,6 +960,7 @@ app.get("/checkout", async (req, res) => {
     `);
   }
 });
+
 
 app.post("/checkout", async (req, res) => {
   try {
