@@ -13,6 +13,14 @@ const BOG_AUTH_URL =
 const BOG_CREATE_ORDER_URL =
   "https://api.bog.ge/payments/v1/ecommerce/orders";
 
+function requiredEnv(name) {
+  if (!process.env[name]) {
+    throw new Error(`Missing environment variable: ${name}`);
+  }
+
+  return process.env[name];
+}
+
 
 function escapeHtml(value = "") {
   return String(value)
@@ -39,14 +47,6 @@ function normalizeGeorgianPhone(phone = "") {
   }
 
   return cleaned;
-}
-
-function requiredEnv(name) {
-  if (!process.env[name]) {
-    throw new Error(`Missing environment variable: ${name}`);
-  }
-
-  return process.env[name];
 }
 
 async function getBogToken() {
@@ -125,6 +125,68 @@ async function shopifyGraphQL(query, variables = {}) {
   }
 
   return json.data;
+}
+
+
+function formatGel(amount) {
+  const n = Number(amount || 0);
+  return `${n.toFixed(2).replace(".00", "")} ₾`;
+}
+
+async function shopifyRest(path) {
+  const shop = requiredEnv("SHOPIFY_SHOP");
+  const token = await getShopifyToken();
+
+  const response = await fetch(`https://${shop}/admin/api/2026-04${path}`, {
+    method: "GET",
+    headers: {
+      "X-Shopify-Access-Token": token,
+      "Content-Type": "application/json",
+    },
+  });
+
+  const text = await response.text();
+
+  if (!response.ok) {
+    throw new Error(`Shopify REST failed: ${text}`);
+  }
+
+  return JSON.parse(text);
+}
+
+async function getCheckoutProductInfo(variantId) {
+  if (!/^\d+$/.test(String(variantId))) {
+    throw new Error("Invalid variant_id");
+  }
+
+  const variantData = await shopifyRest(`/variants/${variantId}.json`);
+  const variant = variantData.variant;
+
+  if (!variant) {
+    throw new Error("Variant not found");
+  }
+
+  const productData = await shopifyRest(`/products/${variant.product_id}.json`);
+  const product = productData.product;
+
+  if (!product) {
+    throw new Error("Product not found");
+  }
+
+  const variantImage =
+    product.images?.find((img) => String(img.id) === String(variant.image_id)) ||
+    product.image ||
+    product.images?.[0] ||
+    null;
+
+  return {
+    productTitle: product.title,
+    variantTitle:
+      variant.title && variant.title !== "Default Title" ? variant.title : "",
+    price: Number(variant.price || 0),
+    sku: variant.sku || "",
+    imageUrl: variantImage?.src || "",
+  };
 }
 
 async function getShopifyOrder(orderId) {
@@ -212,7 +274,7 @@ async function createPendingShopifyOrder({
   const cleanQuantity = Math.max(1, Number(quantity || 1));
   const normalizedPhone = normalizeGeorgianPhone(phone);
 
-  const orderPayload = {
+  const payload = {
     order: {
       line_items: [
         {
@@ -261,7 +323,7 @@ async function createPendingShopifyOrder({
       "Content-Type": "application/json",
       "X-Shopify-Access-Token": token,
     },
-    body: JSON.stringify(orderPayload),
+    body: JSON.stringify(payload),
   });
 
   const text = await response.text();
@@ -464,107 +526,433 @@ app.get("/test-payment", async (req, res) => {
 
 
 app.get("/checkout", async (req, res) => {
-  const variantId = req.query.variant_id;
-  const quantity = req.query.quantity || 1;
+  try {
+    const variantId = req.query.variant_id;
+    const quantity = Math.max(1, Number(req.query.quantity || 1));
 
-  if (!variantId) {
-    return res.status(400).send("Missing variant_id");
+    if (!variantId) {
+      return res.status(400).send("Missing variant_id");
+    }
+
+    const productInfo = await getCheckoutProductInfo(variantId);
+    const total = productInfo.price * quantity;
+
+    res.send(`
+      <!doctype html>
+      <html lang="ka">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>შეკვეთის გაფორმება</title>
+
+          <style>
+            * {
+              box-sizing: border-box;
+            }
+
+            body {
+              margin: 0;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+              background:
+                radial-gradient(circle at top left, rgba(17, 17, 17, 0.08), transparent 34%),
+                linear-gradient(135deg, #f7f7f7 0%, #ffffff 100%);
+              color: #111;
+              min-height: 100vh;
+              padding: 32px 16px;
+            }
+
+            .page {
+              max-width: 1120px;
+              margin: 0 auto;
+            }
+
+            .topbar {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              gap: 16px;
+              margin-bottom: 24px;
+            }
+
+            .brand {
+              display: flex;
+              align-items: center;
+              gap: 12px;
+              font-weight: 900;
+              font-size: 20px;
+            }
+
+            .brand-mark {
+              width: 42px;
+              height: 42px;
+              border-radius: 14px;
+              background: #111;
+              color: #fff;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              font-weight: 900;
+              letter-spacing: -1px;
+            }
+
+            .secure-badge {
+              background: #fff;
+              border: 1px solid #e8e8e8;
+              border-radius: 999px;
+              padding: 10px 14px;
+              font-size: 14px;
+              color: #444;
+              box-shadow: 0 8px 22px rgba(0,0,0,.05);
+            }
+
+            .layout {
+              display: grid;
+              grid-template-columns: 0.95fr 1.05fr;
+              gap: 24px;
+              align-items: start;
+            }
+
+            .card {
+              background: rgba(255,255,255,.92);
+              border: 1px solid #ececec;
+              border-radius: 26px;
+              box-shadow: 0 18px 50px rgba(0,0,0,.08);
+              overflow: hidden;
+            }
+
+            .product-card {
+              padding: 24px;
+            }
+
+            .product-image-wrap {
+              background: #f3f3f3;
+              border-radius: 22px;
+              overflow: hidden;
+              min-height: 340px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              margin-bottom: 22px;
+            }
+
+            .product-image {
+              width: 100%;
+              height: 340px;
+              object-fit: contain;
+              display: block;
+            }
+
+            .no-image {
+              color: #777;
+              font-size: 15px;
+            }
+
+            .product-title {
+              font-size: 28px;
+              line-height: 1.15;
+              margin: 0 0 8px;
+              letter-spacing: -0.5px;
+            }
+
+            .variant {
+              color: #666;
+              margin-bottom: 18px;
+              font-size: 15px;
+            }
+
+            .summary-row {
+              display: flex;
+              justify-content: space-between;
+              gap: 16px;
+              border-top: 1px solid #eee;
+              padding: 14px 0;
+              font-size: 16px;
+            }
+
+            .summary-row.total {
+              font-size: 22px;
+              font-weight: 900;
+              padding-bottom: 0;
+            }
+
+            .checkout-card {
+              padding: 30px;
+            }
+
+            .bog-box {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              gap: 16px;
+              background: #111;
+              color: #fff;
+              border-radius: 20px;
+              padding: 18px 20px;
+              margin-bottom: 24px;
+            }
+
+            .bog-logo {
+              display: flex;
+              align-items: center;
+              gap: 12px;
+              font-weight: 900;
+            }
+
+            .bog-circle {
+              width: 46px;
+              height: 46px;
+              border-radius: 16px;
+              background: #fff;
+              color: #111;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              font-weight: 900;
+              letter-spacing: -1px;
+            }
+
+            .bog-sub {
+              font-size: 13px;
+              color: rgba(255,255,255,.72);
+              margin-top: 2px;
+            }
+
+            h1 {
+              margin: 0 0 8px;
+              font-size: 30px;
+              letter-spacing: -0.7px;
+            }
+
+            .lead {
+              color: #666;
+              margin: 0 0 22px;
+              line-height: 1.5;
+            }
+
+            .grid-2 {
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 14px;
+            }
+
+            label {
+              display: block;
+              margin: 0 0 7px;
+              font-weight: 800;
+              font-size: 14px;
+            }
+
+            .field {
+              margin-bottom: 16px;
+            }
+
+            input {
+              width: 100%;
+              border: 1px solid #dedede;
+              border-radius: 14px;
+              padding: 15px 15px;
+              font-size: 16px;
+              outline: none;
+              background: #fff;
+              transition: border-color .15s ease, box-shadow .15s ease;
+            }
+
+            input:focus {
+              border-color: #111;
+              box-shadow: 0 0 0 4px rgba(17,17,17,.08);
+            }
+
+            .pay-button {
+              width: 100%;
+              min-height: 58px;
+              border: 0;
+              border-radius: 16px;
+              background: #111;
+              color: #fff;
+              font-size: 17px;
+              font-weight: 900;
+              cursor: pointer;
+              margin-top: 8px;
+              box-shadow: 0 14px 30px rgba(0,0,0,.18);
+            }
+
+            .pay-button:hover {
+              opacity: .92;
+            }
+
+            .fine-print {
+              margin-top: 14px;
+              color: #777;
+              font-size: 13px;
+              line-height: 1.45;
+              text-align: center;
+            }
+
+            @media (max-width: 860px) {
+              body {
+                padding: 18px 12px;
+              }
+
+              .layout {
+                grid-template-columns: 1fr;
+              }
+
+              .topbar {
+                align-items: flex-start;
+                flex-direction: column;
+              }
+
+              .product-image-wrap {
+                min-height: 260px;
+              }
+
+              .product-image {
+                height: 260px;
+              }
+
+              .checkout-card,
+              .product-card {
+                padding: 20px;
+              }
+
+              .grid-2 {
+                grid-template-columns: 1fr;
+                gap: 0;
+              }
+
+              h1 {
+                font-size: 26px;
+              }
+
+              .product-title {
+                font-size: 24px;
+              }
+            }
+          </style>
+        </head>
+
+        <body>
+          <main class="page">
+            <div class="topbar">
+              <div class="brand">
+                <div class="brand-mark">MP</div>
+                <div>mypiano.ge</div>
+              </div>
+
+              <div class="secure-badge">🔒 უსაფრთხო გადახდა საქართველოს ბანკით</div>
+            </div>
+
+            <div class="layout">
+              <section class="card product-card">
+                <div class="product-image-wrap">
+                  ${
+                    productInfo.imageUrl
+                      ? `<img class="product-image" src="${escapeHtml(productInfo.imageUrl)}" alt="${escapeHtml(productInfo.productTitle)}" />`
+                      : `<div class="no-image">პროდუქტის ფოტო არ მოიძებნა</div>`
+                  }
+                </div>
+
+                <h2 class="product-title">${escapeHtml(productInfo.productTitle)}</h2>
+
+                ${
+                  productInfo.variantTitle
+                    ? `<div class="variant">${escapeHtml(productInfo.variantTitle)}</div>`
+                    : `<div class="variant">არჩეული პროდუქტი</div>`
+                }
+
+                <div class="summary-row">
+                  <span>ფასი</span>
+                  <strong>${formatGel(productInfo.price)}</strong>
+                </div>
+
+                <div class="summary-row">
+                  <span>რაოდენობა</span>
+                  <strong>${quantity}</strong>
+                </div>
+
+                <div class="summary-row total">
+                  <span>ჯამი</span>
+                  <span>${formatGel(total)}</span>
+                </div>
+              </section>
+
+              <section class="card checkout-card">
+                <div class="bog-box">
+                  <div class="bog-logo">
+                    <div class="bog-circle">BOG</div>
+                    <div>
+                      <div>საქართველოს ბანკი</div>
+                      <div class="bog-sub">გადახდის უსაფრთხო გვერდი</div>
+                    </div>
+                  </div>
+                  <div>→</div>
+                </div>
+
+                <h1>შეკვეთის გაფორმება</h1>
+                <p class="lead">
+                  შეავსეთ მონაცემები. შემდეგ გადახვალთ საქართველოს ბანკის დაცულ გვერდზე და გადაიხდით ბარათით.
+                </p>
+
+                <form method="POST" action="/checkout">
+                  <input type="hidden" name="variant_id" value="${escapeHtml(variantId)}" />
+                  <input type="hidden" name="quantity" value="${escapeHtml(quantity)}" />
+
+                  <div class="grid-2">
+                    <div class="field">
+                      <label>სახელი</label>
+                      <input name="first_name" autocomplete="given-name" required />
+                    </div>
+
+                    <div class="field">
+                      <label>გვარი</label>
+                      <input name="last_name" autocomplete="family-name" required />
+                    </div>
+                  </div>
+
+                  <div class="field">
+                    <label>ტელეფონი</label>
+                    <input name="phone" autocomplete="tel" required placeholder="მაგ: 599123456" />
+                  </div>
+
+                  <div class="field">
+                    <label>ელფოსტა</label>
+                    <input name="email" type="email" autocomplete="email" placeholder="example@mail.com" />
+                  </div>
+
+                  <div class="grid-2">
+                    <div class="field">
+                      <label>ქალაქი</label>
+                      <input name="city" autocomplete="address-level2" required />
+                    </div>
+
+                    <div class="field">
+                      <label>მისამართი</label>
+                      <input name="address1" autocomplete="street-address" required />
+                    </div>
+                  </div>
+
+                  <button class="pay-button" type="submit">
+                    გადახდა საქართველოს ბანკით — ${formatGel(total)}
+                  </button>
+
+                  <div class="fine-print">
+                    გადახდის ღილაკზე დაჭერის შემდეგ შეიქმნება შეკვეთა და ავტომატურად გადახვალთ საქართველოს ბანკის გვერდზე.
+                  </div>
+                </form>
+              </section>
+            </div>
+          </main>
+        </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error("Checkout page error:", error);
+
+    return res.status(500).send(`
+      <h1>Checkout page error</h1>
+      <p>${escapeHtml(error.message)}</p>
+    `);
   }
-
-  res.send(`
-    <!doctype html>
-    <html lang="ka">
-      <head>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>შეკვეთის გაფორმება</title>
-        <style>
-          body {
-            margin: 0;
-            font-family: Arial, sans-serif;
-            background: #f6f6f6;
-            color: #111;
-            padding: 30px 14px;
-          }
-          .box {
-            max-width: 520px;
-            margin: 0 auto;
-            background: #fff;
-            border-radius: 18px;
-            padding: 26px;
-            box-shadow: 0 12px 30px rgba(0,0,0,.08);
-          }
-          h1 {
-            margin-top: 0;
-            font-size: 24px;
-          }
-          label {
-            display: block;
-            margin-top: 14px;
-            font-weight: 700;
-            font-size: 14px;
-          }
-          input {
-            width: 100%;
-            box-sizing: border-box;
-            margin-top: 6px;
-            padding: 13px 14px;
-            border: 1px solid #ddd;
-            border-radius: 10px;
-            font-size: 16px;
-          }
-          button {
-            width: 100%;
-            margin-top: 22px;
-            background: #111;
-            color: #fff;
-            border: 0;
-            border-radius: 12px;
-            padding: 15px 18px;
-            font-size: 16px;
-            font-weight: 700;
-            cursor: pointer;
-          }
-          .small {
-            color: #666;
-            font-size: 13px;
-            line-height: 1.45;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="box">
-          <h1>შეკვეთის გაფორმება</h1>
-          <p class="small">შეავსეთ მონაცემები და შემდეგ გადახვალთ საქართველოს ბანკის უსაფრთხო გადახდის გვერდზე.</p>
-
-          <form method="POST" action="/checkout">
-            <input type="hidden" name="variant_id" value="${escapeHtml(variantId)}" />
-            <input type="hidden" name="quantity" value="${escapeHtml(quantity)}" />
-
-            <label>სახელი</label>
-            <input name="first_name" required />
-
-            <label>გვარი</label>
-            <input name="last_name" required />
-
-            <label>ტელეფონი</label>
-            <input name="phone" required placeholder="მაგ: 599123456" />
-
-            <label>ელფოსტა</label>
-            <input name="email" type="email" />
-
-            <label>ქალაქი</label>
-            <input name="city" required />
-
-            <label>მისამართი</label>
-            <input name="address1" required />
-
-            <button type="submit">გადახდა საქართველოს ბანკით</button>
-          </form>
-        </div>
-      </body>
-    </html>
-  `);
 });
 
 app.post("/checkout", async (req, res) => {
